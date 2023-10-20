@@ -2,17 +2,18 @@ import os
 import argparse
 import time
 import numpy as np
-
+import IPython
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import pandas as pd
 
 parser = argparse.ArgumentParser('ODE demo')
 parser.add_argument('--method', type=str, choices=['dopri5', 'adams'], default='dopri5')
 parser.add_argument('--data_size', type=int, default=1000)
 parser.add_argument('--batch_time', type=int, default=10)
 parser.add_argument('--batch_size', type=int, default=20)
-parser.add_argument('--niters', type=int, default=2000)
+parser.add_argument('--niters', type=int, default=5000)
 parser.add_argument('--test_freq', type=int, default=20)
 parser.add_argument('--viz', action='store_true')
 parser.add_argument('--gpu', type=int, default=0)
@@ -29,7 +30,22 @@ device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 
 true_y0 = torch.tensor([[2., 0.]]).to(device)
 t = torch.linspace(0., 25., args.data_size).to(device)
 true_A = torch.tensor([[-0.1, 2.0], [-2.0, -0.1]]).to(device)
-print(np.arange(args.data_size-args.batch_time, dtype=np.int64))
+#print(np.arange(args.data_size-args.batch_time, dtype=np.int64))
+df_t=pd.read_csv('t.csv')
+df_u=pd.read_csv('u.csv')
+df_x1=pd.read_csv('X1.csv')
+df_x2=pd.read_csv('X2.csv')
+u_full=df_u.to_numpy()[:,1:].reshape(-1)[0:100]
+t_full=df_t.to_numpy()[:,1:].reshape(-1)[0:100]
+x1_full=df_x1.to_numpy()[:,1:].reshape(-1)[0:100]
+x2_full=df_x2.to_numpy()[:,1:].reshape(-1)[0:100]
+
+input_full= np.transpose(np.array([x1_full,x2_full,u_full]))
+input_full_t= np.transpose(np.array([x1_full,x2_full,u_full,t_full]))
+output_full= np.transpose(np.array([x1_full,x2_full,u_full]))
+input_full=torch.tensor(input_full).reshape(100,1,3)
+output_full=torch.tensor(output_full).reshape(100,1,3)
+t_tens=torch.tensor(t_full).reshape(100)
 
 class Lambda(nn.Module):
 
@@ -39,7 +55,7 @@ class Lambda(nn.Module):
 
 with torch.no_grad():
     true_y = odeint(Lambda(), true_y0, t, method='dopri5')
-
+#IPython.embed()
 
 def get_batch():
     s = torch.from_numpy(np.random.choice(np.arange(args.data_size - args.batch_time, dtype=np.int64), args.batch_size, replace=False))
@@ -47,7 +63,8 @@ def get_batch():
     batch_t = t[:args.batch_time]  # (T)
     batch_y = torch.stack([true_y[s + i] for i in range(args.batch_time)], dim=0)  # (T, M, D)
     return batch_y0.to(device), batch_t.to(device), batch_y.to(device)
-
+def get_my_batch():
+    return input_full[0].reshape(1,1,3).to(dtype=torch.float32), t_tens.to(dtype=torch.float32),output_full.reshape(100,1,1,3).to(dtype=torch.float32)
 
 def makedirs(dirname):
     if not os.path.exists(dirname):
@@ -114,9 +131,9 @@ class ODEFunc(nn.Module):
         super(ODEFunc, self).__init__()
 
         self.net = nn.Sequential(
-            nn.Linear(2, 50),
+            nn.Linear(3, 50),
             nn.Tanh(),
-            nn.Linear(50, 2),
+            nn.Linear(50, 3),
         )
 
         for m in self.net.modules():
@@ -125,7 +142,7 @@ class ODEFunc(nn.Module):
                 nn.init.constant_(m.bias, val=0)
 
     def forward(self, t, y):
-        return self.net(y**3)
+        return self.net(y)
 
 
 class RunningAverageMeter(object):
@@ -152,7 +169,8 @@ if __name__ == '__main__':
     ii = 0
 
     func = ODEFunc().to(device)
-    
+    batch_y0,batch_t,batch_y=get_my_batch()
+    #IPython.embed()
     optimizer = optim.RMSprop(func.parameters(), lr=1e-3)
     end = time.time()
 
@@ -162,7 +180,7 @@ if __name__ == '__main__':
 
     for itr in range(1, args.niters + 1):
         optimizer.zero_grad()
-        batch_y0, batch_t, batch_y = get_batch()
+        batch_y0, batch_t, batch_y = get_my_batch()
         pred_y = odeint(func, batch_y0, batch_t).to(device)
         loss = torch.mean(torch.abs(pred_y - batch_y))
         loss.backward()
@@ -173,8 +191,8 @@ if __name__ == '__main__':
 
         if itr % args.test_freq == 0:
             with torch.no_grad():
-                pred_y = odeint(func, true_y0, t)
-                loss = torch.mean(torch.abs(pred_y - true_y))
+                pred_y = odeint(func, batch_y0, batch_t)
+                loss = torch.mean(torch.abs(pred_y - batch_y))
                 print('Iter {:04d} | Total Loss {:.6f}'.format(itr, loss.item()))
                 visualize(true_y, pred_y, func, ii)
                 ii += 1
